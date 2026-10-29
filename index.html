@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S.M.A. Thermal IIoT – Dashboard en vivo</title>
+<style>
+:root{--bg:#121212;--card:#1e1e1e;--acc:#00bcd4;--txt:#e0e0e0;--mut:#a0a0a0;--bd:#333;--warn:#ffb74d;--ok:#69f0ae;--bad:#ff5252}
+*{box-sizing:border-box}
+body{margin:0;font-family:'Segoe UI',Tahoma,sans-serif;background:var(--bg);color:var(--txt)}
+header{display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;align-items:center;padding:16px 24px;border-bottom:1px solid var(--bd);background:linear-gradient(135deg,#162427,#121212)}
+h1{margin:0;font-size:20px;color:var(--acc)}
+.status{font-size:13px;color:var(--mut);display:flex;align-items:center;gap:8px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--bad)}
+.dot.live{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+main{max-width:1200px;margin:0 auto;padding:20px;display:grid;gap:16px;grid-template-columns:repeat(12,1fr)}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:18px}
+.card h2{margin:0 0 12px;font-size:14px;color:var(--acc);font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+.kpi{grid-column:span 3}.wide{grid-column:span 8}.side{grid-column:span 4}.full{grid-column:span 12}
+.big{font-size:44px;font-weight:700;color:var(--acc);line-height:1}
+.big.warn{color:var(--warn)}.big.bad{color:var(--bad)}
+.sub{font-size:13px;color:var(--mut);margin-top:8px}
+.delta.up{color:var(--ok)}.delta.down{color:var(--warn)}
+canvas{width:100%;height:230px;display:block}
+.loss{margin-bottom:10px;font-size:13px}
+.loss .h{display:flex;justify-content:space-between;color:var(--mut);margin-bottom:3px}.loss .h b{color:var(--txt)}
+.bar{height:8px;background:#2a2a2a;border-radius:4px;overflow:hidden}.bar i{display:block;height:100%;background:var(--acc);transition:width .6s}
+.sens{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+.sens div{background:#161616;border:1px solid var(--bd);border-radius:6px;padding:10px;font-size:12px;color:var(--mut)}
+.sens b{display:block;font-size:18px;color:var(--txt);margin-top:2px}
+.alert{padding:10px 12px;border-left:3px solid var(--warn);background:#2a2316;border-radius:4px;margin-bottom:8px;font-size:13px}
+.alert.bad{border-color:var(--bad);background:#2a1616}.alert.ok{border-color:var(--ok);background:#16241b}
+label{font-size:12px;color:var(--mut)} input{background:#121212;color:var(--txt);border:1px solid var(--bd);border-radius:4px;padding:5px 8px;width:110px}
+@media(max-width:800px){.kpi{grid-column:span 6}.wide,.side{grid-column:span 12}}
+</style>
+</head>
+<body>
+<header>
+  <h1>S.M.A. Thermal IIoT · <span id="plant">esperando datos…</span></h1>
+  <div class="status"><span class="dot" id="dot"></span><span id="conn">Conectando…</span> · último dato: <b id="age">—</b></div>
+</header>
+<main>
+  <div class="card kpi"><h2>Eficiencia η</h2><div class="big" id="eff">–</div><div class="sub"><span id="delta" class="delta"></span> vs referencia</div></div>
+  <div class="card kpi"><h2>Pérdidas totales</h2><div class="big" id="lossT">–</div><div class="sub">L₁ + … + L₈</div></div>
+  <div class="card kpi"><h2>Combustible extra</h2><div class="big" id="extra">–</div><div class="sub">kg/h vs referencia · <span id="cost">–</span>/mes</div></div>
+  <div class="card kpi"><h2>Escenario en planta</h2><div style="font-size:16px;margin-top:6px" id="scen">–</div><div class="sub" id="fuel">–</div></div>
+
+  <div class="card wide"><h2>Eficiencia η (%) – últimos minutos</h2><canvas id="chart"></canvas></div>
+  <div class="card side"><h2>Alertas y recomendaciones</h2><div id="alerts"><div class="alert ok">Sin datos todavía.</div></div></div>
+
+  <div class="card wide"><h2>Pérdidas calculadas en el servidor</h2><div id="losses"></div></div>
+  <div class="card side">
+    <h2>Parámetros económicos</h2>
+    <p><label>Costo combustible ($/kg)<br><input type="number" id="price" value="0.12" step="0.01" min="0"></label></p>
+    <p><label>Horas de operación/mes<br><input type="number" id="hours" value="600" step="10" min="0"></label></p>
+    <p class="sub">La referencia es la mejor eficiencia sostenida observada (mediana del 10 % superior del historial).</p>
+  </div>
+
+  <div class="card full"><h2>Sensores (última lectura)</h2><div class="sens" id="sens"></div></div>
+</main>
+<script>
+const $=id=>document.getElementById(id), f=(n,d=1)=>n.toFixed(d).replace('.',',');
+const NAMES=[['l1','L₁ Gases secos de chimenea'],['l2','L₂ Humedad por H₂ del combustible'],['l3','L₃ Humedad del combustible'],['l4','L₄ Humedad del aire'],['l5','L₅ Combustión incompleta (CO)'],['l6','L₆ Radiación y convección'],['l7','L₇ Inquemados en cenizas volantes'],['l8','L₈ Inquemados en cenizas de fondo']];
+const SENS=[['tg','Temp. gases','°C',0],['o2','O₂','%',1],['co','CO','%',2],['flow','Flujo combustible','kg/h',0],['hum','Humedad comb.','%',1],['tb','Temp. superficie','°C',0],['ta','Temp. ambiente','°C',1],['rh','Humedad relativa','%',0],['wind','Viento','m/s',1]];
+$('losses').innerHTML=NAMES.map(([k,n])=>`<div class="loss"><div class="h"><span>${n}</span><b id="t_${k}">–</b></div><div class="bar"><i id="b_${k}" style="width:0"></i></div></div>`).join('');
+let hist=[], last=null, lastRx=0;
+
+function reference(){ // mediana del 10 % superior de las eficiencias válidas
+  const e=hist.filter(h=>h.ok).map(h=>h.eff).sort((a,b)=>b-a); if(e.length<5) return null;
+  const top=e.slice(0,Math.max(3,Math.ceil(e.length*.1))); return top[Math.floor(top.length/2)];
+}
+function alerts(rec){
+  const a=[], r=rec.raw, ref=reference();
+  if(!rec.ok){a.push(['bad','⚠ Sin cálculo: '+rec.reason+'. Verificar instrumento en campo.']);}
+  else{
+    if(r.o2>9) a.push(['warn','Exceso de aire: O₂ = '+f(r.o2)+' %. Ajustar el damper/ventilador; L₁ está elevada.']);
+    if(r.o2<3||r.co>0.2) a.push(['bad','Combustión incompleta: CO = '+f(r.co,2)+' %, O₂ = '+f(r.o2)+' %. Falta aire; riesgo de hollín y pérdida L₅.']);
+    if(r.tg>245) a.push(['warn','Temperatura de gases alta ('+f(r.tg,0)+' °C): posible ensuciamiento de tubos. Programar limpieza/soplado de hollín.']);
+    if(r.hum>15) a.push(['warn','Combustible húmedo ('+f(r.hum)+' %): pérdida L₃ elevada. Revisar almacenamiento o secado.']);
+    if(ref&&ref-rec.eff>2) a.push(['warn','η está '+f(ref-rec.eff)+' puntos por debajo de la referencia.']);
+  }
+  if(!a.length) a.push(['ok','✔ Operación dentro de los rangos esperados.']);
+  $('alerts').innerHTML=a.map(([c,t])=>`<div class="alert ${c==='warn'?'':c}">${t}</div>`).join('');
+}
+function render(rec){
+  last=rec; lastRx=Date.now();
+  $('plant').textContent=rec.plant; $('scen').textContent=rec.scenario?rec.scenario.replace(/_/g,' '):'—'; $('fuel').textContent='Combustible: '+rec.fuel;
+  const ef=$('eff'), ref=reference();
+  if(rec.ok){
+    ef.textContent=f(rec.eff)+' %'; ef.className='big'+(ref&&ref-rec.eff>4?' bad':ref&&ref-rec.eff>2?' warn':'');
+    const tl=Object.values(rec.r).reduce((a,b)=>a+b,0); $('lossT').textContent=f(tl)+' %';
+    NAMES.forEach(([k])=>{$('t_'+k).textContent=f(rec.r[k],2)+' %';$('b_'+k).style.width=Math.min(100,rec.r[k]/12*100)+'%';});
+    if(ref){const d=rec.eff-ref;$('delta').textContent=(d>=0?'▲ +':'▼ ')+f(d,2)+' pts';$('delta').className='delta '+(d>=-0.05?'up':'down');
+      const extra=Math.max(0,rec.raw.flow*(ref/rec.eff-1)); $('extra').textContent=f(extra,0);
+      $('cost').textContent='$'+Math.round(extra*(+$('price').value||0)*(+$('hours').value||0)).toLocaleString('es-CO');}
+  } else {ef.textContent='⚠ sin datos'; ef.className='big bad';}
+  $('sens').innerHTML=SENS.map(([k,n,u,d])=>`<div>${n}<b>${rec.raw[k]==null?'sin señal':f(rec.raw[k],d)+' '+u}</b></div>`).join('');
+  alerts(rec); draw();
+}
+function draw(){
+  const c=$('chart'),dpr=devicePixelRatio||1,W=c.clientWidth,H=c.clientHeight; c.width=W*dpr;c.height=H*dpr;
+  const x=c.getContext('2d'); x.scale(dpr,dpr); x.clearRect(0,0,W,H);
+  const pts=hist.filter(h=>h.ok).slice(-300); if(pts.length<2) return;
+  const v=pts.map(p=>p.eff); let lo=Math.floor(Math.min(...v)-1),hi=Math.ceil(Math.max(...v)+1); if(hi-lo<4){lo-=2;hi+=2;}
+  const L=40,R=W-10,T=10,B=H-22, X=i=>L+i/(pts.length-1)*(R-L), Y=e=>B-(e-lo)/(hi-lo)*(B-T);
+  x.font='11px Segoe UI';x.fillStyle='#a0a0a0';x.strokeStyle='#2a2a2a';
+  for(let i=0;i<=4;i++){const e=lo+(hi-lo)*i/4,y=Y(e);x.beginPath();x.moveTo(L,y);x.lineTo(R,y);x.stroke();x.fillText(e.toFixed(1),4,y+4);}
+  const ref=reference(); if(ref){x.setLineDash([5,5]);x.strokeStyle='#69f0ae';x.beginPath();x.moveTo(L,Y(ref));x.lineTo(R,Y(ref));x.stroke();x.setLineDash([]);x.fillStyle='#69f0ae';x.fillText('referencia',R-60,Y(ref)-4);}
+  x.beginPath();pts.forEach((p,i)=>i?x.lineTo(X(i),Y(p.eff)):x.moveTo(X(i),Y(p.eff)));
+  x.strokeStyle='#00bcd4';x.lineWidth=2;x.stroke();
+  x.lineTo(R,B);x.lineTo(L,B);x.fillStyle='rgba(0,188,212,.12)';x.fill();
+}
+function connect(){
+  const es=new EventSource('/api/stream');
+  es.onopen=()=>{$('conn').textContent='Conectado al servidor';};
+  es.onmessage=e=>{const m=JSON.parse(e.data);
+    if(m.type==='init'){hist=m.history; if(hist.length) render(hist[hist.length-1]);}
+    else{hist.push(m.rec); if(hist.length>900)hist.shift(); render(m.rec);}};
+  es.onerror=()=>{$('conn').textContent='Reconectando…';};
+}
+setInterval(()=>{const s=lastRx?(Date.now()-lastRx)/1000:null, live=s!==null&&s<6;
+  $('dot').className='dot'+(live?' live':''); $('age').textContent=s===null?'—':(live?'hace '+Math.round(s)+' s':'sin señal ('+Math.round(s)+' s)');},1000);
+addEventListener('resize',draw); connect();
+</script>
+</body>
+</html>
